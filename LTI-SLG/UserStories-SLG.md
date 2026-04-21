@@ -381,3 +381,397 @@ Los scorecards aportan el diferenciador de _calidad de contratación_ frente a l
 | **Won't have (MVP)**          | Exportación PDF de scorecards, canales alternativos (SMS/WhatsApp), IA de análisis de evaluaciones                             |
 | **Riesgo principal**          | Integración con proveedor externo de email (US-002 · T3): única dependencia de terceros con impacto en SLA y costes operativos |
 | **Cuello de botella crítico** | US-001 · T4 + T2 (modelo de stages + API): toda la cadena de valor del MVP depende de estos dos ítems                          |
+
+---
+
+---
+
+# Ticket de Trabajo – US-001: Pipeline visual de candidatos
+
+> **Contexto de planificación:** Ticket técnico generado para la sesión de Sprint Planning del Sprint 1. Refleja el desglose de tareas acordado en refinamiento, con criterios de aceptación técnicos, estimaciones en Story Points (escala Fibonacci) y dependencias secuenciadas para el equipo de desarrollo.
+
+---
+
+## Metadatos del ticket
+
+| Campo                    | Valor                   |
+| :----------------------- | :---------------------- |
+| **ID**                   | US-001                  |
+| **Épica**                | Pipeline de candidatos  |
+| **Sprint**               | Sprint 1                |
+| **Prioridad**            | 🔴 Alta — Must have     |
+| **Story Points totales** | **21 SP**               |
+| **Assignee**             | Por asignar en planning |
+| **Bloquea a**            | US-002, US-003          |
+| **Bloqueada por**        | —                       |
+| **Estado**               | To Do                   |
+
+---
+
+## Historia de usuario
+
+**Como** recruiter de la plataforma LTI,
+**quiero** gestionar candidatos en un pipeline visual con etapas configurables,
+**para** tener visibilidad total del proceso de selección y avanzar candidatos sin fricción operativa.
+
+---
+
+## Criterios de aceptación técnicos (DoD — Definition of Done)
+
+Un ítem de este ticket se considera **Done** cuando cumple **todos** los criterios siguientes:
+
+### Funcionales
+
+- [ ] El tablero kanban muestra columnas dinámicas generadas desde la configuración de etapas de la vacante (mín. 3 / máx. 10 columnas).
+- [ ] Cada tarjeta de candidato expone: nombre completo, avatar/iniciales, etapa actual y timestamp de última actividad (formato `DD/MM/YYYY HH:mm`).
+- [ ] El drag & drop entre columnas llama a `PATCH /candidates/:id/stage` y actualiza la UI de forma optimista (sin recarga de página).
+- [ ] Si la llamada a la API falla, la tarjeta revierte a la columna original y se muestra un toast de error.
+- [ ] Cada cambio de etapa genera un registro de actividad inmutable en base de datos con: `candidateId`, `fromStage`, `toStage`, `changedBy` (userId), `changedAt` (UTC timestamp).
+- [ ] El CRUD de etapas permite crear, renombrar y eliminar stages; eliminar una etapa con candidatos asignados mueve éstos a la primera etapa disponible (no los borra).
+- [ ] La configuración de etapas se guarda por `vacancyId`; cambiar las etapas de una vacante no afecta a otras vacantes.
+
+### Técnicos (backend)
+
+- [ ] Endpoint `PATCH /candidates/:id/stage` responde `200 OK` con el candidato actualizado o `404` si no existe, `422` si `stageId` no pertenece a la vacante del candidato.
+- [ ] Endpoint `GET /vacancies/:id/pipeline` devuelve candidatos agrupados por `stageId` en una única consulta (sin N+1 queries — usar `include` de Prisma o `groupBy`).
+- [ ] Los endpoints están protegidos por middleware de autenticación JWT existente.
+- [ ] Todos los cambios de etapa pasan por el servicio de dominio `CandidateStageService` (DDD); la capa de presentación no escribe directamente en el repositorio.
+- [ ] Los campos nuevos en el schema de Prisma tienen migración versionada (`prisma migrate dev`).
+- [ ] Cobertura de tests unitarios del `CandidateStageService` ≥ 80%.
+
+### Técnicos (frontend)
+
+- [ ] El componente `KanbanBoard` está implementado con `react-beautiful-dnd` y es completamente tipado en TypeScript.
+- [ ] El estado del board se gestiona con `useState` local o `useReducer`; no se usa estado global para este componente en el MVP.
+- [ ] Las llamadas a la API pasan por la capa `services/candidateService.ts` (no se llama a Axios directamente desde el componente).
+- [ ] El componente `KanbanBoard` tiene tests de componente con React Testing Library que cubren: render con datos, drag & drop simulado y rollback por error de API.
+
+### Calidad
+
+- [ ] Sin errores de TypeScript (`tsc --noEmit` pasa en CI).
+- [ ] Sin errores de ESLint.
+- [ ] Código revisado por al menos 1 peer (PR aprobada).
+
+---
+
+## Desglose de tareas y estimación
+
+### T4 – CRUD de etapas por vacante (modelo de datos y API)
+
+**Story Points: 3**
+**Prioridad de implementación: 1ª (desbloquea todo lo demás)**
+
+**Descripción técnica:**
+Definir el modelo `Stage` en el schema de Prisma y exponer endpoints REST para su gestión.
+
+**Schema Prisma a añadir:**
+
+```prisma
+model Stage {
+  id          Int           @id @default(autoincrement())
+  name        String        @db.VarChar(100)
+  order       Int
+  vacancyId   Int
+  vacancy     Vacancy       @relation(fields: [vacancyId], references: [id])
+  candidates  Application[] @relation("ApplicationStage")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([vacancyId, order])
+}
+```
+
+**Endpoints a implementar:**
+
+| Método   | Ruta                    | Descripción                        | Respuesta               |
+| :------- | :---------------------- | :--------------------------------- | :---------------------- |
+| `GET`    | `/vacancies/:id/stages` | Lista etapas ordenadas por `order` | `200` array de stages   |
+| `POST`   | `/vacancies/:id/stages` | Crea nueva etapa                   | `201` stage creado      |
+| `PATCH`  | `/stages/:id`           | Renombra una etapa                 | `200` stage actualizado |
+| `DELETE` | `/stages/:id`           | Elimina etapa; reasigna candidatos | `204`                   |
+
+**Criterios de aceptación de la tarea:**
+
+- [ ] `DELETE /stages/:id` devuelve `409 Conflict` si es la única etapa de la vacante (mínimo 1 stage requerido para reasignación).
+- [ ] La constraint `@@unique([vacancyId, order])` se aplica en base de datos.
+- [ ] Migración de Prisma generada y versionada en `/prisma/migrations/`.
+
+---
+
+### T2 – API endpoint `PATCH /candidates/:id/stage`
+
+**Story Points: 3**
+**Prioridad de implementación: 2ª (depende de T4)**
+
+**Descripción técnica:**
+Implementar el endpoint de cambio de etapa dentro de la capa DDD existente, respetando la arquitectura en capas del proyecto.
+
+**Capas a crear/modificar:**
+
+```
+domain/
+  models/CandidateStage.ts          ← Value Object nuevo
+  services/CandidateStageService.ts ← Servicio de dominio nuevo
+infrastructure/
+  repositories/StageRepository.ts   ← Repositorio nuevo (interfaz + implementación Prisma)
+presentation/
+  controllers/candidateController.ts ← Añadir handler patchStage()
+routes/
+  candidates.ts                      ← Añadir ruta PATCH /:id/stage
+```
+
+**Contrato del endpoint:**
+
+```
+PATCH /candidates/:id/stage
+Authorization: Bearer <token>
+Content-Type: application/json
+
+Body:
+{
+  "stageId": number   // ID de la etapa destino (requerido)
+}
+
+Respuestas:
+200 OK     → { id, firstName, lastName, currentStageId, updatedAt }
+400        → { error: "stageId is required" }
+404        → { error: "Candidate not found" }
+422        → { error: "Stage does not belong to this candidate's vacancy" }
+```
+
+**Criterios de aceptación de la tarea:**
+
+- [ ] El servicio `CandidateStageService.changeStage()` valida que `stageId` pertenece a la misma vacante que el candidato antes de persistir.
+- [ ] El cambio de etapa y la creación del registro de actividad ocurren en la misma transacción de Prisma (`prisma.$transaction`).
+- [ ] Tests unitarios del servicio con mocks del repositorio (escenarios: éxito, stage inválido, candidato no encontrado).
+
+---
+
+### T3 – Registro automático de actividad
+
+**Story Points: 2**
+**Prioridad de implementación: 3ª (incluida en transacción de T2)**
+
+**Descripción técnica:**
+Modelo `ActivityLog` y su escritura dentro de la transacción de `CandidateStageService`.
+
+**Schema Prisma a añadir:**
+
+```prisma
+model ActivityLog {
+  id          Int      @id @default(autoincrement())
+  candidateId Int
+  candidate   Candidate @relation(fields: [candidateId], references: [id])
+  fromStageId Int?
+  toStageId   Int
+  changedBy   Int      // Employee.id
+  changedAt   DateTime @default(now())
+
+  // Sin updatedAt ni campos mutables: inmutabilidad garantizada a nivel de schema
+}
+```
+
+**Endpoint de lectura a implementar:**
+
+```
+GET /candidates/:id/activity
+Authorization: Bearer <token>
+
+Respuesta 200:
+[
+  {
+    "id": 1,
+    "fromStage": "Screening",
+    "toStage": "Entrevista",
+    "changedBy": "Ana García",
+    "changedAt": "2026-04-22T10:30:00Z"
+  }
+]
+```
+
+**Criterios de aceptación de la tarea:**
+
+- [ ] No existe endpoint `PATCH` ni `DELETE` sobre `ActivityLog` (inmutabilidad forzada a nivel de API).
+- [ ] `fromStageId` es `null` para el primer registro de un candidato (entrada al pipeline).
+- [ ] Los registros se devuelven ordenados por `changedAt` DESC.
+
+---
+
+### T1 – Componente kanban (UI/UX)
+
+**Story Points: 8**
+**Prioridad de implementación: 4ª (depende de T4 y T2)**
+
+**Descripción técnica:**
+Componente React con `react-beautiful-dnd` (ya instalado: `react-beautiful-dnd 13.1.1`) y MUI como sistema de diseño.
+
+**Estructura de componentes:**
+
+```
+components/
+  KanbanBoard/
+    KanbanBoard.tsx          ← Componente raíz; gestiona DnD context y estado
+    KanbanColumn.tsx         ← Columna individual (Droppable)
+    CandidateCard.tsx        ← Tarjeta de candidato (Draggable)
+    KanbanBoard.types.ts     ← Tipos e interfaces TypeScript
+    KanbanBoard.test.tsx     ← Tests de componente
+```
+
+**Tipos clave:**
+
+```typescript
+interface Stage {
+  id: number;
+  name: string;
+  order: number;
+}
+
+interface CandidateCard {
+  id: number;
+  firstName: string;
+  lastName: string;
+  currentStageId: number;
+  lastActivityAt: string; // ISO 8601
+}
+
+interface KanbanBoardProps {
+  vacancyId: number;
+  stages: Stage[];
+  candidates: CandidateCard[];
+  onStageChange: (candidateId: number, newStageId: number) => Promise<void>;
+}
+```
+
+**Lógica de actualización optimista:**
+
+```typescript
+// 1. Actualizar estado local inmediatamente (UX sin latencia)
+// 2. Llamar a onStageChange (que internamente llama a PATCH /candidates/:id/stage)
+// 3. Si la promesa rechaza → revertir el estado local al valor anterior + mostrar toast error
+```
+
+**Criterios de aceptación de la tarea:**
+
+- [ ] `KanbanBoard` recibe `stages` y `candidates` como props; no hace fetch directamente (separation of concerns).
+- [ ] El componente padre (`PipelinePage`) orquesta el fetch de datos y pasa las props.
+- [ ] Drag & drop entre columnas dispara `onStageChange`; si falla, el estado revierte visualmente.
+- [ ] Tests cubren: render del board con N columnas, simulación de drag & drop exitoso, simulación de error de API con rollback.
+
+---
+
+### T5 – Pruebas unitarias del servicio de actualización de etapa
+
+**Story Points: 2**
+**Prioridad de implementación: 5ª (paralela a T1, tras T2)**
+
+**Descripción técnica:**
+Suite de tests Jest para `CandidateStageService` con mocks de repositorios.
+
+**Casos de test requeridos:**
+
+| Caso                                 | Descripción                                       | Resultado esperado                                          |
+| :----------------------------------- | :------------------------------------------------ | :---------------------------------------------------------- |
+| `changeStage - success`              | Stage válido, candidato existe, vacante coincide  | Retorna candidato actualizado; `ActivityLog` creado         |
+| `changeStage - invalid stage`        | `stageId` no pertenece a la vacante del candidato | Lanza `ValidationError` con código `422`                    |
+| `changeStage - candidate not found`  | `candidateId` inexistente                         | Lanza `NotFoundError` con código `404`                      |
+| `changeStage - same stage`           | `stageId` igual al stage actual                   | Retorna candidato sin crear registro de actividad duplicado |
+| `changeStage - transaction rollback` | El repositorio de `ActivityLog` falla al escribir | Revierte el cambio de etapa; ningún cambio persiste         |
+
+**Criterios de aceptación de la tarea:**
+
+- [ ] Cobertura de líneas ≥ 80% en `CandidateStageService.ts`.
+- [ ] Todos los tests usan mocks (`jest.fn()`) de los repositorios; ningún test toca base de datos real.
+- [ ] Tests nombrados en inglés siguiendo el patrón `describe('CandidateStageService') > it('should ...')`.
+
+---
+
+### T6 – Pruebas E2E del flujo drag & drop
+
+**Story Points: 2**
+**Prioridad de implementación: 6ª (tras T1, T2 y T3 integradas)**
+
+**Descripción técnica:**
+Suite Cypress sobre el flujo completo del pipeline.
+
+**Casos de test E2E requeridos:**
+
+| Caso                       | Pasos                                                 | Aserción                                                             |
+| :------------------------- | :---------------------------------------------------- | :------------------------------------------------------------------- |
+| Visualización del pipeline | Login → navegar a vacante activa                      | Columnas visibles con candidatos correctos por etapa                 |
+| Drag & drop exitoso        | Arrastrar candidato de col. A a col. B                | Tarjeta aparece en col. B; historial del candidato refleja el cambio |
+| Persistencia tras recarga  | Mover candidato → recargar página                     | Candidato sigue en la nueva etapa                                    |
+| Rollback por error de red  | Interceptar `PATCH` con `cy.intercept` → forzar `500` | Tarjeta revierte a columna original; toast de error visible          |
+
+**Criterios de aceptación de la tarea:**
+
+- [ ] Tests en `cypress/e2e/pipeline.cy.ts`.
+- [ ] Usan `cy.intercept` para controlar respuestas de la API (no dependen de datos de producción).
+- [ ] Pasan en CI (entorno headless `cypress run`).
+
+---
+
+### T7 – Accesibilidad WCAG 2.1 AA del kanban
+
+**Story Points: 1**
+**Prioridad de implementación: 7ª (post-MVP si hay restricción de tiempo)**
+
+**Descripción técnica:**
+`react-beautiful-dnd` soporta navegación por teclado nativamente. Esta tarea verifica y completa el soporte.
+
+**Checklist técnico:**
+
+- [ ] Drag & drop operable completamente por teclado: `Tab` para foco, `Space` para seleccionar, flechas para mover, `Enter` para soltar, `Escape` para cancelar.
+- [ ] Cada `CandidateCard` tiene `aria-label` descriptivo: `"Candidato [nombre], etapa [nombre etapa], última actividad [fecha]"`.
+- [ ] Cada columna tiene `role="list"` y `aria-label` con el nombre de la etapa y el recuento de candidatos.
+- [ ] Contraste de colores de las tarjetas ≥ 4.5:1 (WCAG AA) verificado con herramienta axe.
+- [ ] Audit de axe-core integrado en el test de componente `KanbanBoard.test.tsx` con `jest-axe`.
+
+---
+
+## Secuencia de implementación recomendada
+
+```
+Sprint 1 — Semana 1
+┌─────────────────────────────────────────────────────────────┐
+│  Día 1–2  │  T4: Schema Prisma + CRUD stages (3 SP)         │
+│  Día 2–3  │  T2: API PATCH /candidates/:id/stage (3 SP)     │  ← incluye T3 (2 SP)
+│  Día 3    │  T3: ActivityLog (dentro de transacción de T2)  │
+│  Día 4–5  │  T1: KanbanBoard UI + tests componente (8 SP)   │
+└─────────────────────────────────────────────────────────────┘
+
+Sprint 1 — Semana 2
+┌─────────────────────────────────────────────────────────────┐
+│  Día 1–2  │  T5: Tests unitarios CandidateStageService (2 SP)│
+│  Día 2–3  │  T6: Tests E2E Cypress (2 SP)                   │
+│  Día 4    │  T7: Accesibilidad (1 SP) — si queda capacidad  │
+│  Día 5    │  Buffer: revisiones, PR, merge a main            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Estimación total y distribución de carga
+
+| Tarea                           |   SP   | Perfil recomendado | Sprint                      |
+| :------------------------------ | :----: | :----------------- | :-------------------------- |
+| T4 – CRUD stages (schema + API) |   3    | Backend            | Sprint 1                    |
+| T2 – API PATCH stage            |   3    | Backend            | Sprint 1                    |
+| T3 – ActivityLog (transacción)  |   2    | Backend            | Sprint 1                    |
+| T1 – KanbanBoard UI             |   8    | Frontend           | Sprint 1                    |
+| T5 – Tests unitarios servicio   |   2    | Backend / QA       | Sprint 1                    |
+| T6 – Tests E2E Cypress          |   2    | QA / Frontend      | Sprint 1                    |
+| T7 – Accesibilidad WCAG         |   1    | Frontend           | Sprint 1 (si hay capacidad) |
+| **Total**                       | **21** |                    |                             |
+
+> **Velocidad de referencia:** Asumiendo un equipo de 2 desarrolladores (1 backend + 1 frontend) con velocidad histórica de ~20–24 SP/sprint, esta historia encaja en un sprint completo con margen para T7.
+
+---
+
+## Riesgos y mitigaciones
+
+| Riesgo                                                                                    | Probabilidad | Impacto | Mitigación                                                                                                                   |
+| :---------------------------------------------------------------------------------------- | :----------: | :-----: | :--------------------------------------------------------------------------------------------------------------------------- |
+| `react-beautiful-dnd` en modo estricto de React 18 puede generar warnings de `StrictMode` |    Media     |  Bajo   | Envolver `DragDropContext` fuera del `StrictMode` o usar `@hello-pangea/dnd` (fork activo) si hay problemas en CI            |
+| Transacción Prisma entre dos writes puede generar deadlock bajo carga concurrente         |     Baja     |  Alto   | Usar `prisma.$transaction` con timeout explícito; añadir índice en `(candidateId, changedAt)` en `ActivityLog`               |
+| El modelo de datos de `Vacancy` puede no existir aún en el schema actual                  |    Media     |  Alto   | **Verificar schema Prisma existente en la primera tarea de T4**; si `Vacancy` no existe, crear spike de 1 día para definirlo |
+| Capacidad del sprint insuficiente para T7 (accesibilidad)                                 |    Media     |  Bajo   | T7 clasificado como Could have; se mueve al backlog del siguiente sprint sin riesgo para el MVP                              |

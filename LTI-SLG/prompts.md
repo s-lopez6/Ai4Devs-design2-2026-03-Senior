@@ -127,7 +127,7 @@ Metodología de salida explícita: Al prescribir los 4 pilares de análisis y el
 # Prompt 4:
 
 ```
-
+Dado el backlog generado en @UserStories-SLG.md, genera únicamente el ticket de trabajo de 'US-001 – Pipeline visual de candidatos' con criterios de aceptación, estimación en story points y sugiere prioridad. Aterrízalos técnicamente, tal y como se hace en las reuniones de planificación
 ```
 
 # Prompt 5:
